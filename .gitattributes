@@ -1,0 +1,13 @@
+# Normalize every text file to LF in the repository, regardless of the
+# committer's autocrlf setting, so Windows and POSIX checkouts agree.
+* text=auto eol=lf
+
+# Binary assets are never normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary

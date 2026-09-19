@@ -1,0 +1,3 @@
+- insert:
+    - id: zcode-import
+      name: dsh-plugin-zcode-import

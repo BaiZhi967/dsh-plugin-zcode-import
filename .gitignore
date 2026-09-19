@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Local DSH profile state
+.dsh/
+*.log
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Scratch
+tmp/
+*.tmp
+*.bak
