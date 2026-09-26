@@ -48,6 +48,8 @@ window.__ModuleLoader__.load({
         importSelected: '导入选中会话',
         importAll: '导入整个工作区',
         importAllHint: '导入该工作区的全部 ZCode 对话',
+        importNew: '导入为新会话',
+        importNewHint: '把这一条 ZCode 会话再导入一份（新会话标题带 (n) 后缀），与已导入的会话共存',
         running: '正在导入 {done}/{total} · {current}',
         results: '导入明细',
         ok: '已导入',
@@ -90,6 +92,8 @@ window.__ModuleLoader__.load({
         importSelected: 'Import selected',
         importAll: 'Import whole workspace',
         importAllHint: 'Import every ZCode chat of this workspace',
+        importNew: 'Import as new session',
+        importNewHint: 'Store another copy of this ZCode chat as a new session (its title gains an (n) suffix), beside the ones already imported',
         running: 'Importing {done}/{total} · {current}',
         results: 'Import detail',
         ok: 'imported',
@@ -444,11 +448,15 @@ window.__ModuleLoader__.load({
       )
 
       const startImport = useCallback(
-        async (sessionIds) => {
+        async (sessionIds, mode) => {
           if (selectedPath === null) return
           setNotice(null)
           try {
-            const value = await api('import', { path: selectedPath, sessionIds })
+            const value = await api('import', {
+              path: selectedPath,
+              sessionIds,
+              ...(mode === undefined ? {} : { mode }),
+            })
             setJob({ id: value.jobId, state: 'running', total: 0, done: 0, results: [] })
             stopPolling()
             jobTimer.current = window.setInterval(() => void pollJob(value.jobId), POLL_MS)
@@ -474,6 +482,17 @@ window.__ModuleLoader__.load({
       const percent = running && job.total > 0 ? Math.min(100, Math.round((job.done / job.total) * 100)) : running ? 4 : 0
       const selectedWorkspace = workspaces.find((item) => item.path === selectedPath) ?? null
       const allImported = selectedWorkspace !== null && sessions.length > 0 && selectable.length === 0
+      /**
+       * The one conversation a repeat import may target: exactly one checked row
+       * that is already imported. Anything else — no selection, several rows,
+       * or a row that was never imported — hides the action entirely, because
+       * the button means "store another copy beside the existing ones" and only
+       * makes sense for a conversation that already has one.
+       */
+      const repeatable =
+        checked.size === 1
+          ? sessions.find((item) => checked.has(item.id) && item.imported === true) ?? null
+          : null
 
       const workspaceColumn = h(
         'div',
@@ -606,6 +625,17 @@ window.__ModuleLoader__.load({
           },
           t('importAll'),
         ),
+        repeatable !== null && !running
+          ? h(
+              Button,
+              {
+                size: 'md',
+                onClick: () => void startImport([repeatable.id], 'new-session'),
+                title: t('importNewHint'),
+              },
+              t('importNew'),
+            )
+          : null,
         running
           ? h(
               React.Fragment,

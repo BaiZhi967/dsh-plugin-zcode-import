@@ -176,6 +176,56 @@ export async function handle(req, res, ctx, token, root) {
     }
   }
 
+  /** Escape a literal string for embedding in a RegExp. */
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  /**
+   * Every ordinal already stored for one ZCode conversation.
+   *
+   * The first import owns the bare `session-<uuid>` (ordinal 1) and each
+   * "import as a new session" takes the next free `session-<uuid>-<n>`. The
+   * family is read from the persistence service itself instead of a ledger this
+   * plugin would have to keep in sync: `list()` returns the stored headers, so
+   * the ordinals follow from the ids — and a session the user deleted simply
+   * frees its ordinal for reuse.
+   *
+   * @param baseId - the bare session id derived from the ZCode session.
+   * @returns the ordinals that currently exist, ascending.
+   */
+  async function storedOrdinals(baseId) {
+    const ordinals = []
+    if (typeof ctx.sessionPersistence.list !== 'function') {
+      // No listing face on this backend: probe the deterministic ids instead.
+      if (await sessionIsImported(baseId)) ordinals.push(1)
+      for (let ordinal = 2; ordinal < 1000; ordinal += 1) {
+        if (!(await sessionIsImported(`${baseId}-${ordinal}`))) break
+        ordinals.push(ordinal)
+      }
+      return ordinals
+    }
+    const split = new RegExp(`^${escapeRegExp(baseId)}-(\\d+)$`)
+    for (const snapshot of await ctx.sessionPersistence.list()) {
+      const id = String(snapshot.header.id)
+      if (id === baseId) {
+        ordinals.push(1)
+        continue
+      }
+      const match = split.exec(id)
+      if (match !== null) ordinals.push(Number(match[1]))
+    }
+    return ordinals.sort((left, right) => left - right)
+  }
+
+  /** Lowest ordinal at or above 2 that no stored session claims. */
+  function nextSplitOrdinal(ordinals) {
+    const used = new Set(ordinals)
+    let ordinal = 2
+    while (used.has(ordinal)) ordinal += 1
+    return ordinal
+  }
+
   async function status() {
     const described = helpers.describeRoot(archiveRoot)
     return {
@@ -302,20 +352,38 @@ export async function handle(req, res, ctx, token, root) {
    * be refused with the version it actually writes, in which case the
    * conversation is converted again for that version and retried once. A
    * refused `create` has written nothing, so nothing is duplicated.
+   *
+   * `mode` is `'skip-existing'` (default) or `'new-session'`: the latter always
+   * stores another copy beside the sessions the same ZCode conversation already
+   * has, under the next free ordinal id and with ` (n)` appended to its title.
+   * Whether that copy actually holds anything new is the user's call — the
+   * plugin deliberately diffs nothing.
+   *
+   * @param archive - the open ZCode archive.
+   * @param workspace - the target workspace, when its directory exists.
+   * @param row - the ZCode session row being imported.
+   * @param mode - `'skip-existing'` or `'new-session'`.
    */
-  async function importOne(archive, workspace, row) {
+  async function importOne(archive, workspace, row, mode) {
     const conversation = archive.conversation(row.id)
+    const baseId = dshSessionIdFor(row.id)
+    let sessionId = baseId
+    let titleSuffix = ''
+    if (mode === 'new-session') {
+      const ordinal = nextSplitOrdinal(await storedOrdinals(baseId))
+      sessionId = `${baseId}-${ordinal}`
+      titleSuffix = ` (${ordinal})`
+    }
     for (let attempt = 0; ; attempt += 1) {
       const { events, turns, steps } = helpers.convertConversation(
         { meta: row, messages: conversation },
-        { title: row.title, formatVersion },
+        { title: row.title, titleSuffix, formatVersion },
       )
       if (events.length === 0) {
         return { ok: false, skipped: true, reason: '没有可导入的对话内容' }
       }
 
-      const sessionId = dshSessionIdFor(row.id)
-      if (await sessionIsImported(sessionId)) {
+      if (mode !== 'new-session' && (await sessionIsImported(sessionId))) {
         await seedStoredProjections(sessionId)
         if (workspace) {
           try {
@@ -361,10 +429,18 @@ export async function handle(req, res, ctx, token, root) {
       ? request.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
       : []
     const includeSubagents = request?.includeSubagents === true
+    /**
+     * `'new-session'` stores another copy beside the sessions a ZCode
+     * conversation already has; it is deliberately single-conversation, because
+     * repeating it over a whole selection would multiply copies with no
+     * per-conversation confirmation.
+     */
+    const mode = request?.mode === 'new-session' ? 'new-session' : 'skip-existing'
 
     const job = {
       id: randomUUID(),
       path,
+      mode,
       state: 'running',
       total: 0,
       done: 0,
@@ -385,6 +461,9 @@ export async function handle(req, res, ctx, token, root) {
       try {
         if (typeof path !== 'string' || path.length === 0 || !isAbsolute(path)) {
           throw new Error('缺少有效的工作区路径')
+        }
+        if (mode === 'new-session' && requested.length !== 1) {
+          throw new Error('导入为新会话每次只能针对一个已导入的会话')
         }
         archive = await helpers.openArchive(archiveRoot)
 
@@ -407,7 +486,7 @@ export async function handle(req, res, ctx, token, root) {
         for (const row of selected) {
           job.current = row.title ?? row.id
           try {
-            const result = await importOne(archive, workspace, row)
+            const result = await importOne(archive, workspace, row, mode)
             job.results.push({ sourceId: row.id, title: row.title, ...result })
             if (result.ok && result.alreadyImported !== true) job.imported += 1
             else job.skipped += 1

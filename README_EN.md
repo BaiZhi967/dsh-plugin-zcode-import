@@ -25,6 +25,7 @@ English | [中文](README.md)
 | **Chat list** | Title, update time, message count and imported state per chat; subagent chats are folded away by default |
 | **Partial import** | Tick any subset → “Import selected”; “Select all new” ticks the rest |
 | **Whole workspace** | “Import whole workspace” brings in every chat of that workspace |
+| **Import as new session** | An already imported chat can be stored again beside the existing copies: the new session's title gains an `(n)` suffix (from the second import on). **Whether it actually holds anything new is your call** — the plugin diffs nothing |
 | **Progress & detail** | Live progress bar plus a per-chat result list: imported / already exists / skipped / failed, with the reason |
 | **Faithful content** | Text, reasoning, tool calls and tool results all become DSH `tool/call` + `tool/result` events |
 | **Titles preserved** | The sidebar shows the ZCode chat title right away — even when it differs from the first message — with no need to open the chat first |
@@ -73,6 +74,17 @@ Reload the page once after installing, then open **Settings → Session import**
 4. Watch the progress bar and the result list, then close Settings — the sessions are already in the sidebar.
 
 Imported sessions behave like any other session: open them, continue the conversation, archive or delete them. Deleting an imported session never touches ZCode's data.
+
+### Storing another copy of an already imported chat
+
+If a chat kept going in ZCode after you imported it — or you simply want a second copy:
+
+1. Tick **that one** chat in the right column (exactly one);
+2. the toolbar then shows **Import as new session** — press it.
+
+The new session sits beside the existing ones and touches none of them: the first import owns `session-<uuid>`, later copies take `session-<uuid>-2`, `-3`, … and their titles gain ` (2)`, ` (3)` (the naming DSH itself uses for forks). The ordinal is the **lowest free** one — delete a copy and the next import reuses that number.
+
+The plugin **diffs nothing**: whether ZCode actually has new content, and whether you want the copy, is your call. A repeat import only ever stores another session; it never modifies or overwrites an existing one, including the ones you kept chatting in on the DSH side.
 
 ### Custom ZCode location
 
