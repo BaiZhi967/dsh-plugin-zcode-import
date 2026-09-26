@@ -28,6 +28,7 @@ English | [中文](README.md)
 | **Progress & detail** | Live progress bar plus a per-chat result list: imported / already exists / skipped / failed, with the reason |
 | **Faithful content** | Text, reasoning, tool calls and tool results all become DSH `tool/call` + `tool/result` events |
 | **Titles preserved** | The sidebar shows the ZCode chat title right away — even when it differs from the first message — with no need to open the chat first |
+| **Follows the DSH language** | The settings entry and the page text switch with DSH's active language (zh/en); buttons use DSH's own control styles (`--dsw-alias-button-*` + `--dsw-radius-*`) |
 | **Workspace auto-create** | A target directory with no DSH workspace yet is created and the sessions are attached, so they appear in the sidebar immediately |
 | **Hot reload** | Edit `impl.js` and `POST /__reload` — no DSH restart; client edits arrive through DSH's module HMR |
 

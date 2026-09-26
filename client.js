@@ -106,14 +106,43 @@ window.__ModuleLoader__.load({
       },
     }
 
-    const runtime = { dict: DICTS.en }
+    const runtime = { dict: DICTS.en, translate: null }
 
+    /** Locale service captured at apply time, for render-time subscriptions. */
+    let localeService = null
+
+    /**
+     * Translate one key through the locale service when it is wired, and through
+     * the built-in dictionaries otherwise. The service-bound translator reads
+     * the active locale at call time, so this function stays correct across a
+     * language switch without being recreated.
+     *
+     * @param key - dictionary key in this page's namespace.
+     * @param vars - optional `{name}` interpolation values.
+     * @returns the translated text.
+     */
     function t(key, vars) {
+      const translate = runtime.translate
+      if (translate !== null) return translate(key, vars)
       const template = runtime.dict[key] ?? DICTS.en[key] ?? key
       if (vars === undefined) return template
       return template.replace(/\{(\w+)\}/g, (match, name) =>
         vars[name] === undefined ? match : String(vars[name]),
       )
+    }
+
+    /**
+     * Re-render the caller on every locale change: the page's strings come from
+     * the bound translator, which already reads the active locale, so one render
+     * is all a language switch needs.
+     */
+    function useLocaleRevision() {
+      const [, setRevision] = useState(0)
+      useEffect(() => {
+        const service = localeService
+        if (service === null || typeof service.subscribe !== 'function') return undefined
+        return service.subscribe(() => setRevision((value) => value + 1))
+      }, [])
     }
 
     // --------------------------------------------------------------- helpers
@@ -180,26 +209,44 @@ window.__ModuleLoader__.load({
       head: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' },
       title: { fontSize: '15px', fontWeight: 600, margin: 0 },
       hint: { color: COLOR.muted, fontSize: '12px' },
-      button: {
-        border: '1px solid ' + COLOR.border,
-        background: COLOR.layer1,
+      // Buttons follow the shell's own control styles
+      // (dsh-client-ui-primitives Button.module.css): `buttonBase` is the 28px
+      // `sm` variant and `buttonBaseMd` the 36px `md` one. Both variants use the
+      // dedicated button tokens instead of the brand accent —
+      // `--dsw-alias-brand-primary` is near-white in the dark theme, so pairing
+      // it with fixed white text paints an unreadable button.
+      buttonBase: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '4px',
+        boxSizing: 'border-box',
+        height: '28px',
+        padding: '0 10px',
+        border: 'none',
+        borderRadius: 'var(--dsw-radius-sm)',
+        fontFamily: 'inherit',
+        fontSize: '12px',
+        lineHeight: '18px',
         color: COLOR.text,
-        borderRadius: '6px',
-        padding: '4px 10px',
-        fontSize: '12px',
+        background: 'transparent',
         cursor: 'pointer',
       },
+      buttonBaseMd: {
+        height: '36px',
+        padding: '0 14px',
+        borderRadius: 'var(--dsw-radius-md)',
+        fontSize: '14px',
+        lineHeight: '22px',
+      },
+      buttonOutline: { border: '0.5px solid var(--dsw-alias-border-l3)' },
+      buttonHover: { background: 'var(--dsw-alias-interactive-bg-hover)' },
       buttonPrimary: {
-        border: '1px solid transparent',
-        background: COLOR.brand,
-        color: '#fff',
-        borderRadius: '6px',
-        padding: '5px 14px',
-        fontSize: '12px',
-        cursor: 'pointer',
-        fontWeight: 600,
+        background: 'var(--dsw-alias-button-primary-fill)',
+        color: 'var(--dsw-alias-label-primary-foreground)',
       },
-      buttonDisabled: { opacity: 0.5, cursor: 'not-allowed' },
+      buttonPrimaryHover: { background: 'var(--dsw-alias-button-primary-hover)' },
+      buttonDisabled: { opacity: 0.4, cursor: 'not-allowed' },
       columns: { display: 'flex', gap: '12px', flexWrap: 'wrap', minHeight: '320px', height: 'min(56vh, 540px)' },
       column: {
         display: 'flex',
@@ -266,9 +313,48 @@ window.__ModuleLoader__.load({
       resultRow: { display: 'flex', gap: '8px', padding: '2px 0', alignItems: 'baseline' },
     }
 
+    /**
+     * One shell-styled button.
+     *
+     * Inline styles cannot express `:hover`, so the two hover fills the shell
+     * uses are tracked in state instead of a stylesheet.
+     *
+     * @param props - `variant` ('primary' | 'outline'), `size` ('sm' | 'md'),
+     *   plus `disabled`, `title`, `onClick` and `style`.
+     * @returns the button element.
+     */
+    function Button(props) {
+      const [hover, setHover] = useState(false)
+      const primary = props.variant === 'primary'
+      const enabled = props.disabled !== true
+      const style = Object.assign(
+        {},
+        styles.buttonBase,
+        props.size === 'md' ? styles.buttonBaseMd : null,
+        primary ? styles.buttonPrimary : styles.buttonOutline,
+        hover && enabled ? (primary ? styles.buttonPrimaryHover : styles.buttonHover) : null,
+        enabled ? null : styles.buttonDisabled,
+        props.style,
+      )
+      return h(
+        'button',
+        {
+          type: 'button',
+          style,
+          disabled: props.disabled === true,
+          title: props.title,
+          onClick: props.onClick,
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+        },
+        props.children,
+      )
+    }
+
     // ------------------------------------------------------------------ page
 
     function ImportPage() {
+      useLocaleRevision()
       const [status, setStatus] = useState(null)
       const [workspaces, setWorkspaces] = useState([])
       const [loadingWorkspaces, setLoadingWorkspaces] = useState(true)
@@ -397,8 +483,8 @@ window.__ModuleLoader__.load({
           { style: styles.columnHead },
           h('span', null, t('workspaces')),
           h(
-            'button',
-            { style: styles.button, onClick: () => void loadWorkspaces(), disabled: loadingWorkspaces },
+            Button,
+            { onClick: () => void loadWorkspaces(), disabled: loadingWorkspaces },
             t('refresh'),
           ),
         ),
@@ -446,9 +532,8 @@ window.__ModuleLoader__.load({
           { style: styles.columnHead },
           h('span', { style: styles.rowLine }, selectedWorkspace === null ? t('chats') : t('chatsOf', { name: selectedWorkspace.title })),
           h(
-            'button',
+            Button,
             {
-              style: styles.button,
               disabled: sessions.length === 0,
               onClick: () => setChecked(new Set(checked.size === selectable.length ? [] : selectable.map((item) => item.id))),
             },
@@ -502,18 +587,19 @@ window.__ModuleLoader__.load({
         { style: styles.toolbar },
         h('span', { style: styles.hint }, t('selected', { n: checked.size })),
         h(
-          'button',
+          Button,
           {
-            style: Object.assign({}, styles.buttonPrimary, checked.size === 0 || running ? styles.buttonDisabled : {}),
+            variant: 'primary',
+            size: 'md',
             disabled: checked.size === 0 || running,
             onClick: () => void startImport(Array.from(checked)),
           },
           t('importSelected'),
         ),
         h(
-          'button',
+          Button,
           {
-            style: Object.assign({}, styles.button, selectedPath === null || running || allImported ? styles.buttonDisabled : {}),
+            size: 'md',
             disabled: selectedPath === null || running || allImported,
             onClick: () => void startImport([]),
             title: t('importAllHint'),
@@ -589,48 +675,42 @@ window.__ModuleLoader__.load({
     const page = ImportPage
 
     /**
-     * Register this page's zh/en dictionary with the Client locale service and
-     * keep the active dictionary in sync with the active locale.
+     * Register this page's zh/en dictionaries with the Client locale service and
+     * bind a translator to them.
+     *
+     * One call registers every locale (`register(ns, dicts)`), which is the
+     * single-occupant form the service documents for a namespace's own texts.
+     * The bound translator reads the active locale at call time, so nothing here
+     * has to track the active language by hand; `runtime.dict` stays as the
+     * fallback for a host whose locale service is missing.
+     *
+     * @param ctx - client cordis context (its `locale` service is a dependency).
      */
     function installLocale(ctx) {
-      const locale = ctx.get('locale')
-      if (!locale || typeof locale.register !== 'function' || typeof locale.getLocale !== 'function') return
-      const dictFor = (id) => (/^zh/i.test(String(id)) ? DICTS.zh : DICTS.en)
-      const done = new Set()
-      const sync = () => {
-        let snapshot
-        try {
-          snapshot = locale.getLocale()
-        } catch {
-          return
-        }
-        const definitions = new Map(((snapshot && snapshot.locales) || []).map((entry) => [entry.id, entry]))
-        const seen = new Set()
-        let id = snapshot && snapshot.active
-        while (id && !seen.has(id)) {
-          seen.add(id)
-          if (!done.has(id)) {
-            try {
-              locale.register(NS, id, dictFor(id))
-            } catch {
-              /* already registered */
-            }
-            done.add(id)
-          }
-          const definition = definitions.get(id)
-          id = definition && definition.fallback ? definition.fallback : undefined
-        }
-        runtime.dict = dictFor((snapshot && snapshot.active) || 'en')
-      }
-      sync()
-      if (typeof locale.subscribe === 'function') ctx.effect(() => locale.subscribe(sync))
+      const locale = ctx.locale ?? ctx.get('locale')
+      if (!locale || typeof locale.register !== 'function') return
+      localeService = locale
+      if (typeof locale.bind === 'function') runtime.translate = locale.bind(NS)
+      // Registration bumps the locale revision, which is what makes outlets that
+      // rendered before the dictionaries arrived pick them up.
+      ctx.effect(() => locale.register(NS, { zh: DICTS.zh, en: DICTS.en }), 'zcode-import: dictionaries')
     }
 
-    return {
-      inject: ['slots'],
-      apply(ctx) {
-        installLocale(ctx)
-        ctx.slots.inject('settings.section', () =>
+    /**
+     * Register the Settings section entry.
+     *
+     * The nav label is a thunk, but the shell only re-projects a section when its
+     * ledger changes, so a language switch rebuilds the entry: dispose the old
+     * registration and install a fresh one whose label reads the new locale.
+     *
+     * @param ctx - client cordis context.
+     * @returns a rebuild function for locale changes.
+     */
+    function installSection(ctx) {
+      let dispose = null
+      const mount = () => {
+        if (dispose !== null) dispose()
+        dispose = ctx.slots.inject('settings.section', () =>
           ctx.slots.register(
             {
               name: 'settings.section',
@@ -641,6 +721,21 @@ window.__ModuleLoader__.load({
             page,
           ),
         )
+      }
+      mount()
+      return mount
+    }
+
+    return {
+      inject: ['slots', 'locale'],
+      apply(ctx) {
+        installLocale(ctx)
+        const rebuildSection = installSection(ctx)
+        ctx.effect(() => {
+          const service = localeService
+          if (service === null || typeof service.subscribe !== 'function') return undefined
+          return service.subscribe(rebuildSection)
+        }, 'zcode-import: localized section label')
       },
     }
   },
