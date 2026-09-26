@@ -27,6 +27,7 @@ English | [中文](README.md)
 | **Whole workspace** | “Import whole workspace” brings in every chat of that workspace |
 | **Progress & detail** | Live progress bar plus a per-chat result list: imported / already exists / skipped / failed, with the reason |
 | **Faithful content** | Text, reasoning, tool calls and tool results all become DSH `tool/call` + `tool/result` events |
+| **Titles preserved** | The sidebar shows the ZCode chat title right away — even when it differs from the first message — with no need to open the chat first |
 | **Workspace auto-create** | A target directory with no DSH workspace yet is created and the sessions are attached, so they appear in the sidebar immediately |
 | **Hot reload** | Edit `impl.js` and `POST /__reload` — no DSH restart; client edits arrive through DSH's module HMR |
 
@@ -131,6 +132,10 @@ ctx.workspaceRegistry.create(cwd) + Workspace.attachSession(sessionId)
 ```
 
 The header `version` and the tool-result shape both come from the same number, and that number is read **from the harness itself**: when the first import against a DSH of an unknown version is refused with `encodeCurrent requires Session format vN`, the conversation is converted for vN and retried once — `create()` validates before it writes or registers anything, so a refusal leaves no half-written session — and the version is reused for the rest of the process.
+
+Importing then **seeds the projection cache**. A session the runtime has never opened is a *cold* list row: its title and the other projection values are read from the persisted projection cache alone — a zero-I/O read that never folds the log. An import that only writes the log therefore has no title to show, and the sidebar falls back to the workspace directory name (which reads as a lost title) until someone opens the chat once. So the import hands the log it just wrote to the cache's own cold-read path (`sessionProjectionCache.coldSnapshot`), and re-importing an **already stored** session backfills a row whose cache is still empty. The step is best-effort: a missing service or a failing fold only logs a warning and never fails the import.
+
+> The title itself was never missing — the converter writes ZCode's chat title as a `session/title` event (see `lib/convert.js`); what was missing is the projection row the sidebar reads.
 
 The DSH session id is derived from ZCode's `sess_<uuid>` / `sess_subagent_agent_<uuid>` as `session-<uuid>`, so a repeat import is caught by `stat()` and reported as “already exists” — and re-attached to its workspace — rather than stored twice.
 

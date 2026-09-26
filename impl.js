@@ -231,6 +231,70 @@ export async function handle(req, res, ctx, token, root) {
   }
 
   /**
+   * Seed the persisted projection cache for one freshly written session.
+   *
+   * A session the running DSH never opened is a cold list row: its projection
+   * values are read from the persisted cache by header alone, a zero-I/O read
+   * that never folds the log. Writing the log directly (as this plugin does)
+   * therefore leaves the row without a `title`, and the sidebar falls back to
+   * the workspace directory name until someone opens the session once and makes
+   * it live.
+   *
+   * The cache's own cold-read path folds a complete log and writes the row
+   * back, which is exactly what the artifact we just stored provides. Best
+   * effort by design: an older DSH without the service, or a projection that
+   * refuses these events, must never fail the import.
+   *
+   * @param header - the stored session header (the cache's identity witness).
+   * @param events - the complete log just appended, in seq order.
+   * @param sessionId - the stored session id, for diagnostics.
+   */
+  function seedProjectionCache(header, events, sessionId) {
+    const cache = ctx.get('sessionProjectionCache')
+    if (cache === undefined || typeof cache.coldSnapshot !== 'function') return
+    try {
+      cache.coldSnapshot(header, 0, events)
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `[zcode-import] projection cache seed for "${sessionId}" failed: ${String(error)}`,
+      )
+    }
+  }
+
+  /**
+   * Fold one already-stored session back into the persisted projection cache.
+   *
+   * Re-importing a session the runtime has never opened is the backfill path for
+   * rows stored before the cache was seeded: reading the stored log and feeding
+   * it to the cache's cold-read path creates the missing projection row without
+   * opening the session. A live session owns its own checkpoints, so it is left
+   * alone; every failure stays a warning.
+   *
+   * @param sessionId - the stored session to fold.
+   */
+  async function seedStoredProjections(sessionId) {
+    const cache = ctx.get('sessionProjectionCache')
+    if (cache === undefined || typeof cache.coldSnapshot !== 'function') return
+    if (ctx.get('sessions')?.get?.(sessionId) !== undefined) return
+    let handle
+    try {
+      handle = await ctx.sessionPersistence.open(sessionId, 'read')
+      const { events } = await handle.read()
+      cache.coldSnapshot(handle.header, handle.inheritedEventCount, events)
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `[zcode-import] projection backfill for "${sessionId}" failed: ${String(error)}`,
+      )
+    } finally {
+      try {
+        await handle?.close()
+      } catch {
+        /* the read handle is already gone */
+      }
+    }
+  }
+
+  /**
    * Import one ZCode conversation into a durable DSH session.
    *
    * The conversion is expressed in the Session format version of the target
@@ -252,6 +316,7 @@ export async function handle(req, res, ctx, token, root) {
 
       const sessionId = dshSessionIdFor(row.id)
       if (await sessionIsImported(sessionId)) {
+        await seedStoredProjections(sessionId)
         if (workspace) {
           try {
             await workspace.attachSession(sessionId)
@@ -263,15 +328,15 @@ export async function handle(req, res, ctx, token, root) {
       }
 
       try {
-        const handle = await ctx.sessionPersistence.create(
-          helpers.headerFor(row, sessionId, formatVersion),
-        )
+        const header = helpers.headerFor(row, sessionId, formatVersion)
+        const handle = await ctx.sessionPersistence.create(header)
         try {
           await handle.append(events)
           await handle.flush()
         } finally {
           await handle.close()
         }
+        seedProjectionCache(header, events, sessionId)
         if (workspace) await workspace.attachSession(sessionId)
         return { ok: true, sessionId, events: events.length, turns, steps }
       } catch (error) {
