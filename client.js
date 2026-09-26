@@ -209,10 +209,36 @@ window.__ModuleLoader__.load({
     }
 
     const styles = {
-      root: { display: 'flex', flexDirection: 'column', gap: '12px', color: COLOR.text, fontSize: '13px', lineHeight: 1.5 },
-      head: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' },
+      // The page fills the settings section's own scroll container instead of
+      // growing past it: that container is a definite-height flex item, so a
+      // `height: 100%` root turns the page into a fixed header plus a list area
+      // that owns the remaining height — the toolbar and both column headers
+      // stay put while the lists scroll, instead of the whole page scrolling the
+      // actions out of reach.
+      root: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        height: '100%',
+        minHeight: 0,
+        boxSizing: 'border-box',
+        color: COLOR.text,
+        fontSize: '13px',
+        lineHeight: 1.5,
+      },
+      head: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', flexShrink: 0 },
       title: { fontSize: '15px', fontWeight: 600, margin: 0 },
       hint: { color: COLOR.muted, fontSize: '12px' },
+      // The fixed header block: title, intro, notices and toolbar keep their
+      // height, so the list area below is the only thing that flexes.
+      intro: { color: COLOR.muted, fontSize: '12px', flexShrink: 0 },
+      notice: { color: COLOR.muted, fontSize: '12px', flexShrink: 0 },
+      resultsBox: {
+        flex: '0 0 auto',
+        border: '1px solid ' + COLOR.border,
+        borderRadius: '8px',
+        padding: '8px 10px',
+      },
       // Buttons follow the shell's own control styles
       // (dsh-client-ui-primitives Button.module.css): `buttonBase` is the 28px
       // `sm` variant and `buttonBaseMd` the 36px `md` one. Both variants use the
@@ -251,10 +277,29 @@ window.__ModuleLoader__.load({
       },
       buttonPrimaryHover: { background: 'var(--dsw-alias-button-primary-hover)' },
       buttonDisabled: { opacity: 0.4, cursor: 'not-allowed' },
-      columns: { display: 'flex', gap: '12px', flexWrap: 'wrap', minHeight: '320px', height: 'min(56vh, 540px)' },
+      // The list area takes whatever height the fixed header block leaves. A
+      // floor keeps a usable list when the panel is very short — the section's
+      // container then scrolls as a whole, which is the honest fallback rather
+      // than squeezing both lists into nothing.
+      //
+      // Deliberately NOT `flex-wrap: wrap`: a wrapping flex container sizes its
+      // lines from their content, so the columns would grow to their full row
+      // count (812px tall columns inside a 585px box), the inner lists would
+      // never scroll, and the section would scroll as a whole again. A single
+      // nowrap line stretches both columns to the definite height, which is what
+      // makes each list own its own scrollbar.
+      columns: {
+        display: 'flex',
+        gap: '12px',
+        alignItems: 'stretch',
+        flex: '1 1 auto',
+        minHeight: '240px',
+      },
       column: {
         display: 'flex',
         flexDirection: 'column',
+        minHeight: 0,
+        minWidth: 0,
         border: '1px solid ' + COLOR.border,
         borderRadius: '8px',
         background: COLOR.layer1,
@@ -271,7 +316,7 @@ window.__ModuleLoader__.load({
         alignItems: 'center',
         gap: '8px',
       },
-      list: { overflowY: 'auto', flex: 1 },
+      list: { overflowY: 'auto', flex: 1, minHeight: 0 },
       wsItem: {
         display: 'block',
         width: '100%',
@@ -304,6 +349,7 @@ window.__ModuleLoader__.load({
         gap: '8px',
         alignItems: 'center',
         flexWrap: 'wrap',
+        flexShrink: 0,
         padding: '8px 10px',
         border: '1px solid ' + COLOR.border,
         borderRadius: '8px',
@@ -312,7 +358,7 @@ window.__ModuleLoader__.load({
       progressOuter: { height: '6px', borderRadius: '999px', background: COLOR.layer2, overflow: 'hidden', flex: 1, minWidth: '120px' },
       progressInner: { height: '100%', background: COLOR.brand, transition: 'width .2s linear' },
       empty: { padding: '18px', color: COLOR.muted, textAlign: 'center' },
-      error: { color: COLOR.error, fontSize: '12px' },
+      error: { color: COLOR.error, fontSize: '12px', flexShrink: 0 },
       results: { maxHeight: '150px', overflowY: 'auto', fontSize: '12px' },
       resultRow: { display: 'flex', gap: '8px', padding: '2px 0', alignItems: 'baseline' },
     }
@@ -496,7 +542,7 @@ window.__ModuleLoader__.load({
 
       const workspaceColumn = h(
         'div',
-        { style: Object.assign({}, styles.column, { flex: '1 1 36%', minWidth: '200px' }) },
+        { style: Object.assign({}, styles.column, { flex: '1 1 36%', minWidth: '160px' }) },
         h(
           'div',
           { style: styles.columnHead },
@@ -545,7 +591,7 @@ window.__ModuleLoader__.load({
 
       const sessionColumn = h(
         'div',
-        { style: Object.assign({}, styles.column, { flex: '1 1 56%', minWidth: '260px' }) },
+        { style: Object.assign({}, styles.column, { flex: '1 1 56%', minWidth: '200px' }) },
         h(
           'div',
           { style: styles.columnHead },
@@ -659,7 +705,7 @@ window.__ModuleLoader__.load({
           ? null
           : h(
               'div',
-              { style: { border: '1px solid ' + COLOR.border, borderRadius: '8px', padding: '8px 10px' } },
+              { style: styles.resultsBox },
               h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, t('results')),
               h(
                 'div',
@@ -693,9 +739,9 @@ window.__ModuleLoader__.load({
             status === null ? '' : t(status.available ? 'rootLabel' : 'dbMissing', { path: status.available ? status.root : status.database }),
           ),
         ),
-        h('span', { style: styles.hint }, t('intro')),
+        h('span', { style: styles.intro }, t('intro')),
         error !== null ? h('div', { style: styles.error }, error) : null,
-        notice !== null ? h('div', { style: { color: COLOR.muted, fontSize: '12px' } }, notice) : null,
+        notice !== null ? h('div', { style: styles.notice }, notice) : null,
         toolbar,
         h('div', { style: styles.columns }, workspaceColumn, sessionColumn),
         results,
