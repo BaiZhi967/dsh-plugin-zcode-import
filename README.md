@@ -58,6 +58,8 @@ dsh --profile web
 ```
 
 > 环境要求：DSH `>= 0.1.6-alpha.2`、Node `>= 22.19.0`（用到内置 `node:sqlite`，需 Node 22.5+；本插件按 22.19 起算）。
+>
+> **Session 格式兼容**：DSH 0.1.7 起会话格式升到 v4（工具结果变成一等 `tool` 角色消息），v3（0.1.6 及更早）则只认旧的 `user` + `tool-result` 包装。插件不写死版本：首次导入会从 harness 的 `encodeCurrent requires Session format vN` 拒绝信息里读出它实际写入的版本，据此生成对应形状的事件并缓存，**新旧 DSH 都能用**，升级 DSH 也不用换插件。
 
 装好后刷新一次页面，打开 **设置 → 会话导入**。
 
@@ -104,29 +106,31 @@ ZCode 把会话存在 `<ZCode 根>/cli/db/db.sqlite`：
 
 ### DSH 侧的数据结构
 
-DSH 会话是**追加式事件日志**：`sessions/<projectKey(cwd)>/<session-id>/session.v3.jsonl.zstd`，zstd 多帧、首帧是 header、后续每帧是事件行。一条对话的事件序列是：
+DSH 会话是**追加式事件日志**：`sessions/<projectKey(cwd)>/<session-id>/session.v<N>.jsonl.zstd`（`N` 是这一代的 Session 格式版本，DSH 0.1.7 起为 4），zstd 多帧、首帧是 header、后续每帧是事件行。一条对话的事件序列是：
 
 ```
 turn/start → step/start → user/message → assistant/message(含 stream)
            → tool/call + tool/result … → step/end → turn/end
 ```
 
-两个容易踩的校验点：`user/message | assistant/message | tool/result` **必须**带 `surfaceOp: "append"`，而 `tool/call` **必须不带**。归属工作区由 `storages/workspace.json` 的 `sessionIds` 记录，并且会拿 header 里的 `cwd` 做校验。
+三个容易踩的校验点：`user/message | assistant/message | tool/result` **必须**带 `surfaceOp: "append"`，`tool/call` **必须不带**；另外 `tool/result` 的消息形状随格式版本而变——v3 是 `role: "user"` 加一个 `tool-result` 内容包装，v4 起是 `role: "tool"` 且自带 `toolCallId`，**v4 会拒绝 v3 形状**。归属工作区由 `storages/workspace.json` 的 `sessionIds` 记录，并且会拿 header 里的 `cwd` 做校验。
 
 ### 导入路径
 
-**不**手写 `session.v3.jsonl.zstd`——写入路径不做校验，而读取路径是 fail-closed 的，很容易做出「能列出但打不开」的会话。走运行时 API：
+**不**手写 `session.v<N>.jsonl.zstd`——写入路径不做校验，而读取路径是 fail-closed 的，很容易做出「能列出但打不开」的会话。走运行时 API：
 
 ```
 ZCode db.sqlite (只读)
       │  lib/zcode-source.js
       ▼
-转换器 lib/convert.js  ──►  DSH 事件数组
+转换器 lib/convert.js  ──►  DSH 事件数组（形状按目标格式版本生成）
       ▼
 ctx.sessionPersistence.create(header) → append(events) → flush() → close()
       ▼
 ctx.workspaceRegistry.create(cwd) + Workspace.attachSession(sessionId)
 ```
+
+`header` 的 `version` 与事件的工具结果形状都由同一个版本决定，而这个版本**取自 harness 自己**：首次对一个未知版本的 DSH 导入时，若 `create()` 以 `encodeCurrent requires Session format vN` 拒绝，说明该 DSH 写的是 vN，于是按 vN 重新转换并重试一次（`create()` 在写入与注册之前就完成校验，被拒绝不会留下半个会话），随后整个进程复用这个版本。
 
 会话 id 由 ZCode 的 `sess_<uuid>` / `sess_subagent_agent_<uuid>` 派生为 `session-<uuid>`，所以重复导入会命中 `stat()` 判定为「已存在」，并补挂到工作区，而不是再存一份。
 
@@ -139,10 +143,10 @@ dsh-plugin-zcode-import/
 ├── client.js          # 客户端：设置页「会话导入」（locale 文案 + 主题令牌）
 ├── lib/
 │   ├── zcode-source.js  # 只读打开 db.sqlite，列工作区/对话、读消息与 part
-│   └── convert.js       # ZCode 消息/part → DSH 会话事件
+│   └── convert.js       # ZCode 消息/part → DSH 会话事件（按目标格式版本生成）
 ├── tools/
-│   ├── check-conversion.mjs  # 离线自检：转换 + 格式回环校验
-│   └── verify-stored.mjs     # 落盘校验：用官方格式目录重读已导入会话
+│   ├── check-conversion.mjs  # 离线自检：转换 + 每个受支持格式各回环校验一次
+│   └── verify-stored.mjs     # 落盘校验：按代次版本挑官方目录重读已导入会话
 ├── cordis.patch.yml   # bundle 补丁：向 profile 插入插件行
 └── package.json       # dsh.bundle.patch + dsh.client 声明
 ```
@@ -179,9 +183,10 @@ impl.js ──► sessionPersistence / workspaceRegistry
 
 ```sh
 # 1) 转换器自检：把每个 ZCode 会话转成事件后编码成物理行、再走官方还原路径读回来
+#    （v3 与 v4 两套官方目录各跑一遍，任一失败即非 0 退出）
 node tools/check-conversion.mjs 500
 
-# 2) 落盘校验：把已导入的 session.v3.jsonl.zstd 逐帧解开、用官方目录还原
+# 2) 落盘校验：把已导入的 session.v<N>.jsonl.zstd 逐帧解开、用对应版本的官方目录还原
 node tools/verify-stored.mjs "<DSH_HOME>/sessions"
 ```
 
@@ -192,6 +197,8 @@ node tools/verify-stored.mjs "<DSH_HOME>/sessions"
 | 转换 + 格式回环 | **403 / 403 通过**，0 失败，共 236,060 个事件 |
 | 已导入会话落盘还原 | **44 / 44 通过**，0 失败 |
 | 真机导入 | MoTTEavl 6 个、PowerHuman 30 个，0 失败；30 个约 3 秒 |
+
+> 自检覆盖的格式：当前格式用 DSH 自带的 `sessionFormatCatalog`，旧的 v3 用同一个包里的 `historicalSessionFormatCatalog`（旧 harness 实际运行的那个读取器）。会话目录里若同一会话同时存在 v3 与 v4 两代文件，落盘校验只读版本号最高的那一代——也就是运行时真正会读的那一代。
 
 > 脚本会自动定位 DSH 自带的 `@deepseek-ai/dsh-session-format-catalog`（依次尝试直接 import、`DSH_CHECKOUT` 环境变量、全局 npm 目录）。定位失败时按提示设置 `DSH_CHECKOUT` 指向 DSH 安装目录即可。
 

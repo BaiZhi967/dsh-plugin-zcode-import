@@ -27,6 +27,21 @@ let loadedToken
 let libs
 
 /**
+ * Session format version this harness writes, once an import has learned it.
+ *
+ * Older and newer DSH disagree about both the header version and the shape of a
+ * `tool/result` message, and each refuses the other's shape with
+ * `encodeCurrent requires Session format vN`. `create` validates before it
+ * writes or registers anything, so that refusal doubles as the probe: the
+ * import re-converts for vN and retries once, then remembers N for the process.
+ * Until then the converter's own default is used.
+ */
+let formatVersion
+
+/** The refusal that names the version the running harness accepts. */
+const SESSION_FORMAT_REFUSAL = /encodeCurrent requires Session format v(\d+)/
+
+/**
  * Import the pure helpers under the caller's cache-busting token.
  *
  * `index.js` hands a fresh token after a reload; the token is threaded into
@@ -45,7 +60,9 @@ async function loadLibs(token) {
     DEFAULT_ZCODE_ROOT: source.DEFAULT_ZCODE_ROOT,
     convertConversation: convert.convertConversation,
     headerFor: convert.headerFor,
+    DEFAULT_FORMAT_VERSION: convert.DEFAULT_FORMAT_VERSION,
   }
+  formatVersion ??= convert.DEFAULT_FORMAT_VERSION
   loadedToken = token
   return libs
 }
@@ -213,38 +230,56 @@ export async function handle(req, res, ctx, token, root) {
     return { path, sessions: value }
   }
 
-  /** Import one ZCode conversation into a durable DSH session. */
+  /**
+   * Import one ZCode conversation into a durable DSH session.
+   *
+   * The conversion is expressed in the Session format version of the target
+   * harness (`formatVersion`): a first attempt against an unknown harness may
+   * be refused with the version it actually writes, in which case the
+   * conversation is converted again for that version and retried once. A
+   * refused `create` has written nothing, so nothing is duplicated.
+   */
   async function importOne(archive, workspace, row) {
     const conversation = archive.conversation(row.id)
-    const { events, turns, steps } = helpers.convertConversation(
-      { meta: row, messages: conversation },
-      { title: row.title },
-    )
-    if (events.length === 0) {
-      return { ok: false, skipped: true, reason: '没有可导入的对话内容' }
-    }
-
-    const sessionId = dshSessionIdFor(row.id)
-    if (await sessionIsImported(sessionId)) {
-      if (workspace) {
-        try {
-          await workspace.attachSession(sessionId)
-        } catch {
-          /* already accounted or cwd mismatch — the session is still stored */
-        }
+    for (let attempt = 0; ; attempt += 1) {
+      const { events, turns, steps } = helpers.convertConversation(
+        { meta: row, messages: conversation },
+        { title: row.title, formatVersion },
+      )
+      if (events.length === 0) {
+        return { ok: false, skipped: true, reason: '没有可导入的对话内容' }
       }
-      return { ok: true, sessionId, alreadyImported: true, events: events.length, turns, steps }
-    }
 
-    const handle = await ctx.sessionPersistence.create(helpers.headerFor(row, sessionId))
-    try {
-      await handle.append(events)
-      await handle.flush()
-    } finally {
-      await handle.close()
+      const sessionId = dshSessionIdFor(row.id)
+      if (await sessionIsImported(sessionId)) {
+        if (workspace) {
+          try {
+            await workspace.attachSession(sessionId)
+          } catch {
+            /* already accounted or cwd mismatch — the session is still stored */
+          }
+        }
+        return { ok: true, sessionId, alreadyImported: true, events: events.length, turns, steps }
+      }
+
+      try {
+        const handle = await ctx.sessionPersistence.create(
+          helpers.headerFor(row, sessionId, formatVersion),
+        )
+        try {
+          await handle.append(events)
+          await handle.flush()
+        } finally {
+          await handle.close()
+        }
+        if (workspace) await workspace.attachSession(sessionId)
+        return { ok: true, sessionId, events: events.length, turns, steps }
+      } catch (error) {
+        const required = SESSION_FORMAT_REFUSAL.exec(error?.message ?? '')
+        if (required === null || attempt > 0) throw error
+        formatVersion = Number(required[1])
+      }
     }
-    if (workspace) await workspace.attachSession(sessionId)
-    return { ok: true, sessionId, events: events.length, turns, steps }
   }
 
   function pruneJobs() {

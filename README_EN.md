@@ -58,6 +58,8 @@ Or write the row directly into the profile's `cordis.patch.yml`:
 ```
 
 > Requirements: DSH `>= 0.1.6-alpha.2`, Node `>= 22.19.0` (the plugin uses built-in `node:sqlite`, available since Node 22.5).
+>
+> **Session format compatibility**: DSH 0.1.7 moved sessions to format v4, where a tool result is a first-class `tool` role message; v3 (0.1.6 and earlier) only accepts the older `user` message holding a `tool-result` wrapper. The plugin hardcodes neither: the first import reads the version the harness actually writes from its `encodeCurrent requires Session format vN` refusal, converts for that version, and remembers it — so **both old and new DSH work**, and upgrading DSH needs no plugin change.
 
 Reload the page once after installing, then open **Settings → Session import**.
 
@@ -104,29 +106,31 @@ Runtime-injected reminders (`todo_reminder`, `background_notification`, …) and
 
 ### DSH's data model
 
-A DSH session is an **append-only event log**: `sessions/<projectKey(cwd)>/<session-id>/session.v3.jsonl.zstd` — concatenated zstd frames, the first holding the header and the rest one event row each. One exchange looks like:
+A DSH session is an **append-only event log**: `sessions/<projectKey(cwd)>/<session-id>/session.v<N>.jsonl.zstd` (`N` is the Session format version of that generation — 4 since DSH 0.1.7) — concatenated zstd frames, the first holding the header and the rest one event row each. One exchange looks like:
 
 ```
 turn/start → step/start → user/message → assistant/message (with stream)
            → tool/call + tool/result … → step/end → turn/end
 ```
 
-Two validation traps worth knowing: `user/message | assistant/message | tool/result` **must** carry `surfaceOp: "append"`, while `tool/call` **must not**. Workspace membership lives in `storages/workspace.json` (`sessionIds`) and is validated against the header's `cwd`.
+Three validation traps worth knowing: `user/message | assistant/message | tool/result` **must** carry `surfaceOp: "append"`, while `tool/call` **must not**; and the `tool/result` message shape follows the format version — v3 uses `role: "user"` with a single `tool-result` content wrapper, v4 uses `role: "tool"` with its own `toolCallId`, and **v4 rejects the v3 shape**. Workspace membership lives in `storages/workspace.json` (`sessionIds`) and is validated against the header's `cwd`.
 
 ### The import path
 
-This plugin deliberately does **not** hand-write `session.v3.jsonl.zstd`: the write path validates nothing while the read path is fail-closed, which easily produces sessions that list but never open. It uses the runtime APIs instead:
+This plugin deliberately does **not** hand-write `session.v<N>.jsonl.zstd`: the write path validates nothing while the read path is fail-closed, which easily produces sessions that list but never open. It uses the runtime APIs instead:
 
 ```
 ZCode db.sqlite (read-only)
       │  lib/zcode-source.js
       ▼
-converter lib/convert.js  ──►  DSH event array
+converter lib/convert.js  ──►  DSH event array (shaped for the target format)
       ▼
 ctx.sessionPersistence.create(header) → append(events) → flush() → close()
       ▼
 ctx.workspaceRegistry.create(cwd) + Workspace.attachSession(sessionId)
 ```
+
+The header `version` and the tool-result shape both come from the same number, and that number is read **from the harness itself**: when the first import against a DSH of an unknown version is refused with `encodeCurrent requires Session format vN`, the conversation is converted for vN and retried once — `create()` validates before it writes or registers anything, so a refusal leaves no half-written session — and the version is reused for the rest of the process.
 
 The DSH session id is derived from ZCode's `sess_<uuid>` / `sess_subagent_agent_<uuid>` as `session-<uuid>`, so a repeat import is caught by `stat()` and reported as “already exists” — and re-attached to its workspace — rather than stored twice.
 
@@ -139,10 +143,10 @@ dsh-plugin-zcode-import/
 ├── client.js          # Client: the Settings page (locale strings + theme tokens)
 ├── lib/
 │   ├── zcode-source.js  # Read-only db.sqlite access: workspaces, chats, messages, parts
-│   └── convert.js       # ZCode messages/parts → DSH session events
+│   └── convert.js       # ZCode messages/parts → DSH session events (per target format)
 ├── tools/
-│   ├── check-conversion.mjs  # Offline self-test: convert + format round-trip
-│   └── verify-stored.mjs     # Stored-artifact check through the official catalog
+│   ├── check-conversion.mjs  # Offline self-test: convert + round-trip per supported format
+│   └── verify-stored.mjs     # Stored-artifact check through the matching official catalog
 ├── cordis.patch.yml   # Bundle patch: inserts the plugin row
 └── package.json       # dsh.bundle.patch + dsh.client declarations
 ```
@@ -179,9 +183,10 @@ Two scripts ship with the repo. Both use the **official DSH format catalog** (`@
 
 ```sh
 # 1) Converter self-test: convert every ZCode chat, encode to physical rows, restore via the official path
+#    (run once per supported format — v3 and v4 — and exit non-zero if either fails)
 node tools/check-conversion.mjs 500
 
-# 2) Stored-artifact check: decompress each imported session.v3.jsonl.zstd and restore it
+# 2) Stored-artifact check: decompress each imported session.v<N>.jsonl.zstd and restore it
 node tools/verify-stored.mjs "<DSH_HOME>/sessions"
 ```
 
@@ -192,6 +197,8 @@ Measured locally (403 human conversations over a multi-GB database):
 | Conversion + format round-trip | **403 / 403 passed**, 0 failures, 236,060 events total |
 | Stored-artifact restore | **44 / 44 passed**, 0 failures |
 | Live imports | MoTTEavl 6 and PowerHuman 30 chats, 0 failures; 30 chats in ~3 s |
+
+> Formats covered by the self-test: the current one through DSH's `sessionFormatCatalog`, and released v3 through `historicalSessionFormatCatalog` from the same package — the reader older harnesses actually run. When a session directory keeps both a v3 and a v4 generation, the stored-artifact check reads only the highest version, which is the one the runtime reads.
 
 > The scripts locate DSH's own `@deepseek-ai/dsh-session-format-catalog` automatically (a plain import first, then `DSH_CHECKOUT`, then the global npm directories). If resolution fails, point `DSH_CHECKOUT` at your DSH installation as the error message describes.
 
