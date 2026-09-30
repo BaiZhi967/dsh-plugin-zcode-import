@@ -57,7 +57,7 @@ dsh --profile web
       name: dsh-plugin-zcode-import
 ```
 
-> 环境要求：DSH `>= 0.1.6-alpha.2`、Node `>= 22.19.0`（用到内置 `node:sqlite`，需 Node 22.5+；本插件按 22.19 起算）。
+> 环境要求：DSH `>= 0.2.0-rc.2`、Node `>= 22.19.0`（用到内置 `node:sqlite`，需 Node 22.5+；本插件按 22.19 起算）。
 
 装好后刷新一次页面，打开 **设置 → 会话导入**。
 
@@ -104,7 +104,7 @@ ZCode 把会话存在 `<ZCode 根>/cli/db/db.sqlite`：
 
 ### DSH 侧的数据结构
 
-DSH 会话是**追加式事件日志**：`sessions/<projectKey(cwd)>/<session-id>/session.v3.jsonl.zstd`，zstd 多帧、首帧是 header、后续每帧是事件行。一条对话的事件序列是：
+DSH 会话是**追加式事件日志**：`sessions/<projectKey(cwd)>/<session-id>/session.v4.jsonl.zstd`，zstd 多帧、首帧是 header、后续每帧是事件行。一条对话的事件序列是：
 
 ```
 turn/start → step/start → user/message → assistant/message(含 stream)
@@ -115,7 +115,7 @@ turn/start → step/start → user/message → assistant/message(含 stream)
 
 ### 导入路径
 
-**不**手写 `session.v3.jsonl.zstd`——写入路径不做校验，而读取路径是 fail-closed 的，很容易做出「能列出但打不开」的会话。走运行时 API：
+**不**手写 `session.v4.jsonl.zstd`——写入路径不做校验，而读取路径是 fail-closed 的，很容易做出「能列出但打不开」的会话。走运行时 API：
 
 ```
 ZCode db.sqlite (只读)
@@ -181,7 +181,7 @@ impl.js ──► sessionPersistence / workspaceRegistry
 # 1) 转换器自检：把每个 ZCode 会话转成事件后编码成物理行、再走官方还原路径读回来
 node tools/check-conversion.mjs 500
 
-# 2) 落盘校验：把已导入的 session.v3.jsonl.zstd 逐帧解开、用官方目录还原
+# 2) 落盘校验：把已导入的 session.v4.jsonl.zstd 逐帧解开、用官方目录还原
 node tools/verify-stored.mjs "<DSH_HOME>/sessions"
 ```
 

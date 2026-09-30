@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-zcode-import",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DSH Settings plugin that imports local ZCode conversations as native DeepSeek Harness sessions — browse ZCode workspaces, pick chats, import a subset or a whole workspace. DSH 会话导入插件：把本地 ZCode 的会话导入 DeepSeek Harness，支持按工作区浏览、勾选导入。",
   "license": "MIT",
   "author": "BaiZhi967",
@@ -55,7 +55,7 @@
   "homepage": "https://github.com/BaiZhi967/dsh-plugin-zcode-import#readme",
   "engines": {
     "node": ">=22.19.0",
-    "dsh": ">=0.1.6-alpha.2"
+    "dsh": ">=0.2.0-rc.2"
   },
   "publishConfig": {
     "access": "public",

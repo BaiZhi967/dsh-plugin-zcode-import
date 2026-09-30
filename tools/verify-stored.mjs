@@ -1,12 +1,13 @@
 /**
  * Verify one PERSISTED DSH session artifact, exactly as the runtime reads it:
- * walk the concatenated zstd frames of `session.v3.jsonl.zstd`, decode every
+ * walk the concatenated zstd frames of the current `session.vN.jsonl.zstd`
+ * generation (v4 on the harness this plugin targets), decode every
  * physical row through the installed format catalog, restore, and derive the
  * model-visible messages.
  *
  * Usage: node tools/verify-stored.mjs "<sessions root>" [sessionIdPrefix]
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { loadSessionFormatCatalog } from './resolve-catalog.mjs'
@@ -44,8 +45,16 @@ for (const project of projects) {
   const projectDir = join(root, project.name)
   for (const session of readdirSync(projectDir, { withFileTypes: true })) {
     if (!session.isDirectory() || !session.name.startsWith(prefix)) continue
-    const artifactPath = join(projectDir, session.name, 'session.v3.jsonl.zstd')
-    if (!existsSync(artifactPath)) continue
+    const sessionDir = join(projectDir, session.name)
+    const artifactName = readdirSync(sessionDir)
+      .filter((name) => /^session\.v\d+\.jsonl\.zstd$/.test(name))
+      .sort(
+        (left, right) =>
+          Number(/^session\.v(\d+)/.exec(left)[1]) - Number(/^session\.v(\d+)/.exec(right)[1]),
+      )
+      .at(-1)
+    if (artifactName === undefined) continue
+    const artifactPath = join(sessionDir, artifactName)
     checked += 1
     try {
       const rows = readArtifact(artifactPath).map((line) => JSON.parse(line))

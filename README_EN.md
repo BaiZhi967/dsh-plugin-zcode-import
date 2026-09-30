@@ -57,7 +57,7 @@ Or write the row directly into the profile's `cordis.patch.yml`:
       name: dsh-plugin-zcode-import
 ```
 
-> Requirements: DSH `>= 0.1.6-alpha.2`, Node `>= 22.19.0` (the plugin uses built-in `node:sqlite`, available since Node 22.5).
+> Requirements: DSH `>= 0.2.0-rc.2`, Node `>= 22.19.0` (the plugin uses built-in `node:sqlite`, available since Node 22.5).
 
 Reload the page once after installing, then open **Settings → Session import**.
 
@@ -104,7 +104,7 @@ Runtime-injected reminders (`todo_reminder`, `background_notification`, …) and
 
 ### DSH's data model
 
-A DSH session is an **append-only event log**: `sessions/<projectKey(cwd)>/<session-id>/session.v3.jsonl.zstd` — concatenated zstd frames, the first holding the header and the rest one event row each. One exchange looks like:
+A DSH session is an **append-only event log**: `sessions/<projectKey(cwd)>/<session-id>/session.v4.jsonl.zstd` — concatenated zstd frames, the first holding the header and the rest one event row each. One exchange looks like:
 
 ```
 turn/start → step/start → user/message → assistant/message (with stream)
@@ -115,7 +115,7 @@ Two validation traps worth knowing: `user/message | assistant/message | tool/res
 
 ### The import path
 
-This plugin deliberately does **not** hand-write `session.v3.jsonl.zstd`: the write path validates nothing while the read path is fail-closed, which easily produces sessions that list but never open. It uses the runtime APIs instead:
+This plugin deliberately does **not** hand-write `session.v4.jsonl.zstd`: the write path validates nothing while the read path is fail-closed, which easily produces sessions that list but never open. It uses the runtime APIs instead:
 
 ```
 ZCode db.sqlite (read-only)
@@ -181,7 +181,7 @@ Two scripts ship with the repo. Both use the **official DSH format catalog** (`@
 # 1) Converter self-test: convert every ZCode chat, encode to physical rows, restore via the official path
 node tools/check-conversion.mjs 500
 
-# 2) Stored-artifact check: decompress each imported session.v3.jsonl.zstd and restore it
+# 2) Stored-artifact check: decompress each imported session.v4.jsonl.zstd and restore it
 node tools/verify-stored.mjs "<DSH_HOME>/sessions"
 ```
 
