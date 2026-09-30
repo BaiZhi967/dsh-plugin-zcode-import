@@ -653,7 +653,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'locale'],
       apply(ctx) {
         installLocale(ctx)
         ctx.slots.inject('settings.section', () =>
