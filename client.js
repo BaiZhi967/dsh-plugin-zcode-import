@@ -106,14 +106,25 @@ window.__ModuleLoader__.load({
       },
     }
 
-    const runtime = { dict: DICTS.en }
-
-    function t(key, vars) {
-      const template = runtime.dict[key] ?? DICTS.en[key] ?? key
+    function interpolate(template, vars) {
       if (vars === undefined) return template
       return template.replace(/\{(\w+)\}/g, (match, name) =>
         vars[name] === undefined ? match : String(vars[name]),
       )
+    }
+
+    /**
+     * Live translation seat. `installLocale` upgrades it to the locale
+     * service's bound translator; until then the built-in English dictionary
+     * keeps the page readable.
+     */
+    const runtime = {
+      locale: null,
+      t: (key, vars) => interpolate(DICTS.en[key] ?? key, vars),
+    }
+
+    function t(key, vars) {
+      return runtime.t(key, vars)
     }
 
     // --------------------------------------------------------------- helpers
@@ -176,10 +187,21 @@ window.__ModuleLoader__.load({
     }
 
     const styles = {
-      root: { display: 'flex', flexDirection: 'column', gap: '12px', color: COLOR.text, fontSize: '13px', lineHeight: 1.5 },
-      head: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' },
+      root: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        color: COLOR.text,
+        fontSize: '13px',
+        lineHeight: 1.5,
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+      },
+      head: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', flexShrink: 0 },
       title: { fontSize: '15px', fontWeight: 600, margin: 0 },
       hint: { color: COLOR.muted, fontSize: '12px' },
+      intro: { color: COLOR.muted, fontSize: '12px', flexShrink: 0 },
       button: {
         border: '1px solid ' + COLOR.border,
         background: COLOR.layer1,
@@ -200,7 +222,7 @@ window.__ModuleLoader__.load({
         fontWeight: 600,
       },
       buttonDisabled: { opacity: 0.5, cursor: 'not-allowed' },
-      columns: { display: 'flex', gap: '12px', flexWrap: 'wrap', minHeight: '320px', height: 'min(56vh, 540px)' },
+      columns: { display: 'flex', gap: '12px', flex: '1 1 auto', minHeight: 0, flexWrap: 'nowrap' },
       column: {
         display: 'flex',
         flexDirection: 'column',
@@ -208,6 +230,8 @@ window.__ModuleLoader__.load({
         borderRadius: '8px',
         background: COLOR.layer1,
         overflow: 'hidden',
+        minWidth: 0,
+        minHeight: 0,
       },
       columnHead: {
         padding: '8px 10px',
@@ -220,7 +244,7 @@ window.__ModuleLoader__.load({
         alignItems: 'center',
         gap: '8px',
       },
-      list: { overflowY: 'auto', flex: 1 },
+      list: { overflowY: 'auto', flex: 1, minHeight: 0, overscrollBehavior: 'contain' },
       wsItem: {
         display: 'block',
         width: '100%',
@@ -253,6 +277,7 @@ window.__ModuleLoader__.load({
         gap: '8px',
         alignItems: 'center',
         flexWrap: 'wrap',
+        flexShrink: 0,
         padding: '8px 10px',
         border: '1px solid ' + COLOR.border,
         borderRadius: '8px',
@@ -262,7 +287,7 @@ window.__ModuleLoader__.load({
       progressInner: { height: '100%', background: COLOR.brand, transition: 'width .2s linear' },
       empty: { padding: '18px', color: COLOR.muted, textAlign: 'center' },
       error: { color: COLOR.error, fontSize: '12px' },
-      results: { maxHeight: '150px', overflowY: 'auto', fontSize: '12px' },
+      results: { maxHeight: '150px', overflowY: 'auto', fontSize: '12px', overscrollBehavior: 'contain' },
       resultRow: { display: 'flex', gap: '8px', padding: '2px 0', alignItems: 'baseline' },
     }
 
@@ -543,7 +568,14 @@ window.__ModuleLoader__.load({
           ? null
           : h(
               'div',
-              { style: { border: '1px solid ' + COLOR.border, borderRadius: '8px', padding: '8px 10px' } },
+              {
+                style: {
+                  border: '1px solid ' + COLOR.border,
+                  borderRadius: '8px',
+                  padding: '8px 10px',
+                  flexShrink: 0,
+                },
+              },
               h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, t('results')),
               h(
                 'div',
@@ -577,9 +609,9 @@ window.__ModuleLoader__.load({
             status === null ? '' : t(status.available ? 'rootLabel' : 'dbMissing', { path: status.available ? status.root : status.database }),
           ),
         ),
-        h('span', { style: styles.hint }, t('intro')),
-        error !== null ? h('div', { style: styles.error }, error) : null,
-        notice !== null ? h('div', { style: { color: COLOR.muted, fontSize: '12px' } }, notice) : null,
+        h('span', { style: styles.intro }, t('intro')),
+        error !== null ? h('div', { style: Object.assign({}, styles.error, { flexShrink: 0 }) }, error) : null,
+        notice !== null ? h('div', { style: { color: COLOR.muted, fontSize: '12px', flexShrink: 0 } }, notice) : null,
         toolbar,
         h('div', { style: styles.columns }, workspaceColumn, sessionColumn),
         results,
@@ -594,36 +626,30 @@ window.__ModuleLoader__.load({
      */
     function installLocale(ctx) {
       const locale = ctx.get('locale')
-      if (!locale || typeof locale.register !== 'function' || typeof locale.getLocale !== 'function') return
-      const dictFor = (id) => (/^zh/i.test(String(id)) ? DICTS.zh : DICTS.en)
-      const done = new Set()
-      const sync = () => {
-        let snapshot
-        try {
-          snapshot = locale.getLocale()
-        } catch {
-          return
-        }
-        const definitions = new Map(((snapshot && snapshot.locales) || []).map((entry) => [entry.id, entry]))
-        const seen = new Set()
-        let id = snapshot && snapshot.active
-        while (id && !seen.has(id)) {
-          seen.add(id)
-          if (!done.has(id)) {
-            try {
-              locale.register(NS, id, dictFor(id))
-            } catch {
-              /* already registered */
-            }
-            done.add(id)
-          }
-          const definition = definitions.get(id)
-          id = definition && definition.fallback ? definition.fallback : undefined
-        }
-        runtime.dict = dictFor((snapshot && snapshot.active) || 'en')
+      if (!locale || typeof locale.register !== 'function') return
+      runtime.locale = locale
+      /*
+       * Register the complete zh/en dictionary once, up front. Registering only
+       * whichever language happened to be active at mount time made lookups for
+       * the new active language miss until the next locale notification, so
+       * different parts of the page flipped languages at different moments.
+       */
+      try {
+        ctx.effect(() => locale.register(NS, { en: DICTS.en, zh: DICTS.zh }))
+      } catch {
+        /* a previous instance already owns this namespace */
       }
-      sync()
-      if (typeof locale.subscribe === 'function') ctx.effect(() => locale.subscribe(sync))
+      if (typeof locale.bind === 'function') {
+        const bound = locale.bind(NS)
+        runtime.t = (key, vars) => {
+          try {
+            const text = bound(key, vars)
+            return text === undefined || text === null ? key : String(text)
+          } catch {
+            return key
+          }
+        }
+      }
     }
 
     return {
@@ -636,6 +662,7 @@ window.__ModuleLoader__.load({
               name: 'settings.section',
               id: 'zcode-import',
               order: 30,
+              locale: NS,
               label: () => t('sectionLabel'),
             },
             page,
